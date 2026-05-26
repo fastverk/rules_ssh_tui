@@ -116,7 +116,7 @@ def ssh_tui_image(
 
     oci_image(
         name = name,
-        base = "@distroless_cc",
+        base = "@ssh_tui_distroless_cc",
         entrypoint = entrypoint,
         env = env,
         exposed_ports = ["{}/tcp".format(listen_port)],
