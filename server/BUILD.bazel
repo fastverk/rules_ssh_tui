@@ -6,7 +6,7 @@ server in alongside the caller's login_binary.
 """
 
 load("@rules_rust//rust:defs.bzl", "rust_binary")
-load("@@rules_rust++_crate+++crate+ssh_tui_crates//:defs.bzl", "all_crate_deps")
+load("@ssh_tui_crates//:defs.bzl", "all_crate_deps")
 
 package(default_visibility = ["//visibility:public"])
 
