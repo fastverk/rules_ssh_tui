@@ -116,7 +116,10 @@ def ssh_tui_image(
 
     oci_image(
         name = name,
-        base = "@ssh_tui_distroless_cc",
+        # `@rules_ssh_tui//:base_image` is an alias re-exporting the
+        # base image we pulled in MODULE.bazel; consumer BUILDs can't
+        # see the underlying `@ssh_tui_distroless_cc` repo directly.
+        base = "@rules_ssh_tui//:base_image",
         entrypoint = entrypoint,
         env = env,
         exposed_ports = ["{}/tcp".format(listen_port)],

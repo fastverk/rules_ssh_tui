@@ -23,7 +23,7 @@
 # as the entrypoint.
 module(
     name = "rules_ssh_tui",
-    version = "0.0.2",
+    version = "0.0.3",
 )
 
 bazel_dep(name = "platforms", version = "1.0.0")
