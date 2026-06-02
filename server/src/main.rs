@@ -48,8 +48,17 @@ struct Args {
     host_key: PathBuf,
 
     /// OpenSSH-format authorized_keys file (one pubkey per line).
+    /// Missing or empty file is allowed when --github-users is set.
     #[arg(long, default_value = "/var/lib/ssh-tui/authorized_keys")]
     authorized_keys: PathBuf,
+
+    /// Comma-separated GitHub usernames whose public SSH keys
+    /// (fetched from https://github.com/<user>.keys at startup)
+    /// are appended to the accepted set. Use this when you want
+    /// SSH access governed by org membership / personal account
+    /// instead of a hand-maintained file. Env: GITHUB_USERS.
+    #[arg(long, value_delimiter = ',', env = "GITHUB_USERS")]
+    github_users: Vec<String>,
 
     /// Path to the login binary. Spawned under a PTY for every
     /// successful session.
@@ -74,14 +83,44 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let host_key = load_or_create_host_key(&args.host_key)?;
-    let authorized_keys = load_authorized_keys(&args.authorized_keys)?;
+    let mut authorized_keys = if args.authorized_keys.exists() {
+        load_authorized_keys(&args.authorized_keys)?
+    } else if args.github_users.is_empty() {
+        return Err(anyhow!(
+            "no authorized_keys file at {} and no --github-users; refusing to start",
+            args.authorized_keys.display()
+        ));
+    } else {
+        tracing::info!(
+            path = %args.authorized_keys.display(),
+            "no authorized_keys file present; relying on --github-users",
+        );
+        Vec::new()
+    };
+    let file_count = authorized_keys.len();
+    let mut github_count = 0;
+    for user in &args.github_users {
+        let fetched = fetch_github_keys(user).await.with_context(|| {
+            format!("fetch SSH pubkeys for GitHub user {user}")
+        })?;
+        github_count += fetched.len();
+        authorized_keys.extend(fetched);
+    }
+    if authorized_keys.is_empty() {
+        return Err(anyhow!(
+            "authorized_keys file + GitHub fetch produced 0 valid pubkeys; refusing to start",
+        ));
+    }
     tracing::info!(
         listen = %args.listen,
         host_key = %args.host_key.display(),
         authorized_keys = %args.authorized_keys.display(),
         login_binary = %args.login_binary.display(),
         login_args = ?args.login_args,
+        github_users = ?args.github_users,
         accepted_keys = authorized_keys.len(),
+        accepted_keys_from_file = file_count,
+        accepted_keys_from_github = github_count,
         "ssh-tui-server ready",
     );
 
@@ -143,6 +182,39 @@ fn load_or_create_host_key(path: &Path) -> Result<KeyPair> {
 fn load_authorized_keys(path: &Path) -> Result<Vec<PublicKey>> {
     let body = std::fs::read_to_string(path)
         .with_context(|| format!("read authorized_keys at {}", path.display()))?;
+    Ok(parse_authorized_keys_body(&body, &format!("file {}", path.display())))
+}
+
+/// Fetch one GitHub user's public SSH keys from
+/// `https://github.com/<user>.keys`, parse each line, and return
+/// the recognized russh PublicKey values. Unrecognized lines are
+/// skipped with a warning so a single malformed entry doesn't
+/// reject every other key on the user's account.
+async fn fetch_github_keys(user: &str) -> Result<Vec<PublicKey>> {
+    let url = format!("https://github.com/{user}.keys");
+    let body = reqwest::Client::builder()
+        .user_agent("ssh-tui-server")
+        .build()
+        .context("build reqwest client")?
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("GET {url}"))?
+        .error_for_status()
+        .with_context(|| format!("GET {url} non-2xx"))?
+        .text()
+        .await
+        .context("read body")?;
+    let keys = parse_authorized_keys_body(&body, &format!("github:{user}"));
+    tracing::info!(
+        user = %user,
+        keys = keys.len(),
+        "fetched GitHub SSH pubkeys",
+    );
+    Ok(keys)
+}
+
+fn parse_authorized_keys_body(body: &str, src: &str) -> Vec<PublicKey> {
     let mut keys = Vec::new();
     for (idx, raw) in body.lines().enumerate() {
         let line = raw.trim();
@@ -152,9 +224,6 @@ fn load_authorized_keys(path: &Path) -> Result<Vec<PublicKey>> {
         match russh::keys::parse_public_key_base64(line) {
             Ok(k) => keys.push(k),
             Err(_) => {
-                // parse_public_key_base64 expects just the base64
-                // blob; OpenSSH lines have `<algo> <base64> <comment>`.
-                // Strip the algo prefix + comment and retry.
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 2 {
                     if let Ok(k) = russh::keys::parse_public_key_base64(parts[1]) {
@@ -162,11 +231,15 @@ fn load_authorized_keys(path: &Path) -> Result<Vec<PublicKey>> {
                         continue;
                     }
                 }
-                tracing::warn!(line = idx + 1, "authorized_keys: failed to parse line");
+                tracing::warn!(
+                    src = %src,
+                    line = idx + 1,
+                    "skipping unparseable pubkey line",
+                );
             }
         }
     }
-    Ok(keys)
+    keys
 }
 
 #[derive(Clone)]
