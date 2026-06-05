@@ -39,7 +39,7 @@ Bind-mounts the consumer should provide via compose:
                                    on first start if absent)
 """
 
-load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 
 def ssh_tui_image(
@@ -139,3 +139,14 @@ def ssh_tui_image(
         repo_tags = [(repository or name) + ":latest"],
         visibility = visibility,
     )
+
+    # Direct registry push — `bazel run :<name>_push -- --tag <sha>
+    # --repository <registry>/<repo>` pushes without needing a docker
+    # daemon (uses crane internally).
+    if repository:
+        oci_push(
+            name = name + "_push",
+            image = ":" + name,
+            repository = repository,
+            visibility = visibility,
+        )
